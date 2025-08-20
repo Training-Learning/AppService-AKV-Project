@@ -54,7 +54,8 @@ jobs:
         working-directory: infra
         run: |
           terraform init -upgrade
-          terraform fmt -check
+          terraform fmt -recursive
+          terraform fmt -recursive -check  # now passes since we just formatted
           terraform validate
           terraform plan -out tfplan
           terraform apply -auto-approve tfplan
