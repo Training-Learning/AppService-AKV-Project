@@ -1,0 +1,61 @@
+name: step1-infra-apply
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
+
+      # ---- Set your TF vars here (or use terraform.tfvars) ----
+      TF_VAR_rg_name:   "rg-appsvc-internal"
+      TF_VAR_location:  "eastus2"
+      TF_VAR_vnet_cidr: "10.20.0.0/16"
+      TF_VAR_snet_pe_cidr: "10.20.1.0/24"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (client secret)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ env.ARM_CLIENT_ID }}
+          tenant-id:       ${{ env.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Terraform Init / Plan / Apply
+        working-directory: infra
+        run: |
+          terraform init -upgrade
+          terraform fmt -check
+          terraform validate
+          terraform plan -out tfplan
+          terraform apply -auto-approve tfplan
+
+      - name: Show outputs
+        id: tfout
+        working-directory: infra
+        run: |
+          echo "RG=$(terraform output -raw resource_group_name)"   >> $GITHUB_OUTPUT
+          echo "APP=$(terraform output -raw webapp_name)"          >> $GITHUB_OUTPUT
+          echo "PE_IP=$(terraform output -raw private_endpoint_ip)" >> $GITHUB_OUTPUT
+
+      - name: Print summary
+        run: |
+          echo "Resource Group: ${{ steps.tfout.outputs.RG }}"
+          echo "Web App:        ${{ steps.tfout.outputs.APP }}"
+          echo "PE Private IP:  ${{ steps.tfout.outputs.PE_IP }}"
