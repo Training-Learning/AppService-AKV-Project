@@ -3,9 +3,8 @@ name: step1-infra-apply
 on:
   workflow_dispatch: {}
 
-# Using client secret auth (no OIDC), so id-token permission is NOT required
 permissions:
-  contents: read
+  contents: read   # no id-token needed when using client secret
 
 concurrency:
   group: step1-infra-apply
@@ -15,14 +14,8 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
 
-    # Azure creds + Terraform variables (adjust values on the TF_VAR_* lines)
     env:
-      ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
-
-      # ---- Terraform variables used by infra/main.tf ----
+      # Terraform variables (adjust or move to terraform.tfvars)
       TF_VAR_rg_name:       "rg-appsvc-internal"
       TF_VAR_location:      "eastus2"
       TF_VAR_vnet_cidr:     "10.20.0.0/16"
@@ -32,13 +25,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ✅ Preflight: ensure org/repo secrets are accessible (non-empty)
+      - name: Assert required secrets exist
+        shell: bash
+        run: |
+          missing=0
+          [ -z "${{ secrets.ARM_CLIENT_ID }}" ]       && echo "::error::ARM_CLIENT_ID is missing/inaccessible" && missing=1
+          [ -z "${{ secrets.ARM_CLIENT_SECRET }}" ]   && echo "::error::ARM_CLIENT_SECRET is missing/inaccessible" && missing=1
+          [ -z "${{ secrets.ARM_SUBSCRIPTION_ID }}" ] && echo "::error::ARM_SUBSCRIPTION_ID is missing/inaccessible" && missing=1
+          [ -z "${{ secrets.ARM_TENANT_ID }}" ]       && echo "::error::ARM_TENANT_ID is missing/inaccessible" && missing=1
+          exit $missing
+
       - name: Azure login (client secret)
         uses: azure/login@v2
         with:
-          client-id:       ${{ env.ARM_CLIENT_ID }}
-          tenant-id:       ${{ env.ARM_TENANT_ID }}
-          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
-          client-secret:   ${{ env.ARM_CLIENT_SECRET }}
+          client-id:       ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id:       ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          client-secret:   ${{ secrets.ARM_CLIENT_SECRET }}  # forces client-secret auth
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -58,8 +62,8 @@ jobs:
         id: tfout
         working-directory: infra
         run: |
-          echo "RG=$(terraform output -raw resource_group_name)"   >> $GITHUB_OUTPUT
-          echo "APP=$(terraform output -raw webapp_name)"          >> $GITHUB_OUTPUT
+          echo "RG=$(terraform output -raw resource_group_name)"    >> $GITHUB_OUTPUT
+          echo "APP=$(terraform output -raw webapp_name)"           >> $GITHUB_OUTPUT
           echo "PE_IP=$(terraform output -raw private_endpoint_ip)" >> $GITHUB_OUTPUT
 
       - name: Summary
