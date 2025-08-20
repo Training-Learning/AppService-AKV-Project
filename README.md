@@ -24,3 +24,11 @@ app → <PE private IP>
 	nslookup app.internal.contoso.com → should return the PE IP.
 	curl -vk https://app.internal.contoso.com → should present your uploaded cert.
 
+
+Day 1 setup
+git add README.md
+git config --global user.email "sid1985@gmail.com"
+git config --global user.name "Sid Bhatt"
+git commit -m "first commit"
+git branch -M main
+git push -u origin main
