@@ -115,3 +115,19 @@ resource "azurerm_private_endpoint" "pe" {
     private_dns_zone_ids = [azurerm_private_dns_zone.appsvc.id]
   }
 }
+
+resource "azurerm_private_dns_a_record" "app_default" {
+  name                = azurerm_linux_web_app.app.name
+  zone_name           = azurerm_private_dns_zone.appsvc.name
+  resource_group_name = azurerm_resource_group.rg.name
+  ttl                 = 300
+  records             = [azurerm_private_endpoint.pe.private_service_connection[0].private_ip_address]
+}
+
+resource "azurerm_private_dns_a_record" "app_scm" {
+  name                = "${azurerm_linux_web_app.app.name}.scm"
+  zone_name           = azurerm_private_dns_zone.appsvc.name
+  resource_group_name = azurerm_resource_group.rg.name
+  ttl                 = 300
+  records             = [azurerm_private_endpoint.pe.private_service_connection[0].private_ip_address]
+}
