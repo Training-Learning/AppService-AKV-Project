@@ -1,10 +1,9 @@
 name: step1-infra-apply
-
 on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read   # no id-token needed when using client secret
+  contents: read
 
 concurrency:
   group: step1-infra-apply
@@ -15,34 +14,36 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Terraform variables (adjust or move to terraform.tfvars)
+      # TF vars for infra/main.tf
       TF_VAR_rg_name:       "rg-appsvc-internal"
       TF_VAR_location:      "eastus2"
       TF_VAR_vnet_cidr:     "10.20.0.0/16"
       TF_VAR_snet_pe_cidr:  "10.20.1.0/24"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ✅ Preflight: ensure org/repo secrets are accessible (non-empty)
+      # Sanity: ensure org/repo secrets are accessible
       - name: Assert required secrets exist
         shell: bash
         run: |
-          missing=0
-          [ -z "${{ secrets.ARM_CLIENT_ID }}" ]       && echo "::error::ARM_CLIENT_ID is missing/inaccessible" && missing=1
-          [ -z "${{ secrets.ARM_CLIENT_SECRET }}" ]   && echo "::error::ARM_CLIENT_SECRET is missing/inaccessible" && missing=1
-          [ -z "${{ secrets.ARM_SUBSCRIPTION_ID }}" ] && echo "::error::ARM_SUBSCRIPTION_ID is missing/inaccessible" && missing=1
-          [ -z "${{ secrets.ARM_TENANT_ID }}" ]       && echo "::error::ARM_TENANT_ID is missing/inaccessible" && missing=1
-          exit $missing
+          [ -z "${{ secrets.ARM_CLIENT_ID }}" ]       && { echo "::error::ARM_CLIENT_ID missing"; exit 1; }
+          [ -z "${{ secrets.ARM_CLIENT_SECRET }}" ]   && { echo "::error::ARM_CLIENT_SECRET missing"; exit 1; }
+          [ -z "${{ secrets.ARM_SUBSCRIPTION_ID }}" ] && { echo "::error::ARM_SUBSCRIPTION_ID missing"; exit 1; }
+          [ -z "${{ secrets.ARM_TENANT_ID }}" ]       && { echo "::error::ARM_TENANT_ID missing"; exit 1; }
+          echo "All good."
 
-      - name: Azure login (client secret)
-        uses: azure/login@v1
-        with:
-          client-id:       ${{ secrets.ARM_CLIENT_ID }}
-          tenant-id:       ${{ secrets.ARM_TENANT_ID }}
-          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-          client-secret:   ${{ secrets.ARM_CLIENT_SECRET }}  # forces client-secret auth
+      # 🔐 Raw Azure CLI login (service principal) — NO OIDC involved
+      - name: Azure CLI login (service principal)
+        shell: bash
+        run: |
+          az login --service-principal \
+            --username "${{ secrets.ARM_CLIENT_ID }}" \
+            --password "${{ secrets.ARM_CLIENT_SECRET }}" \
+            --tenant   "${{ secrets.ARM_TENANT_ID }}"
+          az account set --subscription "${{ secrets.ARM_SUBSCRIPTION_ID }}"
+          echo "Logged in as:"
+          az account show --output table
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
