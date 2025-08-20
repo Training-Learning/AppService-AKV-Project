@@ -39,7 +39,9 @@ resource "azurerm_subnet" "snet_pe" {
   resource_group_name                       = azurerm_resource_group.rg.name
   virtual_network_name                      = azurerm_virtual_network.vnet.name
   address_prefixes                          = [var.snet_pe_cidr]  # e.g., 10.20.1.0/24
-  private_endpoint_network_policies_enabled = false
+  # private_endpoint_network_policies_enabled = false
+  private_endpoint_network_policies = "Disabled"
+
 }
 
 # -------------------------
