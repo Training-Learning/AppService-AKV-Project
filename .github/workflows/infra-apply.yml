@@ -19,6 +19,11 @@ jobs:
       TF_VAR_location:      "eastus2"
       TF_VAR_vnet_cidr:     "10.20.0.0/16"
       TF_VAR_snet_pe_cidr:  "10.20.1.0/24"
+      ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
 
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +54,9 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
+
+      - name: Show Azure context
+        run: az account show --output table
 
       - name: Terraform Init / Plan / Apply
         working-directory: infra
