@@ -1,0 +1,30 @@
+name: Create VM in the test subnet
+id: vm 
+shell: bash
+ run: |
+   VM_NAME="${{ github.event.inputs.vm_name || 'vm-dns-test' }}"
+   VM_SIZE="${{ github.event.inputs.vm_size || 'Standard_B1s' }}"
+   ADMIN_USER="${{ github.event.inputs.admin_username || 'azureuser' }}"
+   NIC_ID="${{ steps.net.outputs.NIC_ID }}"
+
+    if az vm show -g "$RG" -n "$VM_NAME" >/dev/null 2>&1; then
+      echo "VM $VM_NAME already exists; skipping create."
+    else
+      # ▶️ Password-based auth + Public IP for SSH
+      az vm create \
+        -g "$RG" -n "$VM_NAME" \
+        --image Ubuntu2204 \
+        --size "$VM_SIZE" \
+        --admin-username "$ADMIN_USER" \
+        --authentication-type password \
+        --admin-password "${{ secrets.VM_ADMIN_PASSWORD }}" \
+        --nics "$NIC_ID" \
+        --only-show-errors
+    fi
+
+    PRIV_IP=$(az vm list-ip-addresses -g "$RG" -n "$VM_NAME" --query "[0].virtualMachine.network.privateIpAddresses[0]" -o tsv)
+    PUB_IP=$(az vm list-ip-addresses -g "$RG" -n "$VM_NAME" --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" -o tsv)
+    echo "PRIV_IP=$PRIV_IP" >> $GITHUB_OUTPUT
+    echo "PUB_IP=$PUB_IP"   >> $GITHUB_OUTPUT
+    echo "Private IP: $PRIV_IP"
+    echo "Public  IP: ${PUB_IP:-<none>}"
