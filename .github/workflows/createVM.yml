@@ -1,4 +1,6 @@
 name: Create VM in the test subnet
+on:
+  workflow_dispatch: {}
 id: vm 
 shell: bash
  run: |
