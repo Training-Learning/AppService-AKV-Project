@@ -3,44 +3,121 @@ name: Create VM in the test subnet
 on:
   workflow_dispatch:
     inputs:
+      create_public_ip:
+        description: "Create Public IP to allow SSH (true/false)"
+        required: false
+        default: "true"
       vm_name:
-        description: 'VM Name'
+        description: "VM Name"
         required: false
-        default: 'vm-dns-test'
+        default: "vm-dns-test"
       vm_size:
-        description: 'VM Size'
+        description: "VM Size"
         required: false
-        default: 'Standard_B1s'
+        default: "Standard_B1s"
       admin_username:
-        description: 'Admin Username'
+        description: "Admin Username"
         required: false
-        default: 'azureuser'
+        default: "azureuser"
+      subnet_prefix:
+        description: "New test subnet CIDR inside vnet-appsvc"
+        required: false
+        default: "10.20.2.0/24"
+
+permissions:
+  contents: read
 
 jobs:
   create_vm:
     runs-on: ubuntu-latest
     env:
-      RG: rg-appsvc-internal # <-- Set this to your resource group, or pass as an input
+      RG: rg-appsvc-internal
+      VNET_NAME: vnet-appsvc
+      SUBNET_NAME: snet-test-vm
+      APP_NAME: webapp-internal-y436q
+      CREATE_PUBLIC_IP: ${{ github.event.inputs.create_public_ip || 'true' }}
 
     steps:
-      # 🔐 Raw Azure CLI login (service principal) — NO OIDC involved
-      - name: Azure CLI login (service principal)
-        shell: bash
+      - uses: actions/checkout@v4
+
+      - name: Assert required secrets
         run: |
+          die(){ echo "::error::$1"; exit 1; }
+          [ -z "${{ secrets.ARM_CLIENT_ID }}" ]       && die "ARM_CLIENT_ID missing"
+          [ -z "${{ secrets.ARM_CLIENT_SECRET }}" ]   && die "ARM_CLIENT_SECRET missing"
+          [ -z "${{ secrets.ARM_SUBSCRIPTION_ID }}" ] && die "ARM_SUBSCRIPTION_ID missing"
+          [ -z "${{ secrets.ARM_TENANT_ID }}" ]       && die "ARM_TENANT_ID missing"
+          [ -z "${{ secrets.VM_ADMIN_PASSWORD }}" ]   && die "VM_ADMIN_PASSWORD missing"
+          if [ "${{ github.event.inputs.create_public_ip || 'true' }}" = "true" ]; then
+            [ -z "${{ secrets.ALLOW_SSH_CIDR }}" ] && die "ALLOW_SSH_CIDR missing (e.g. 1.2.3.4/32)"
+          fi
+          echo "Secrets OK."
+
+      - name: Azure CLI login (service principal)
+        run: |
+          set -e
           az login --service-principal \
             --username "${{ secrets.ARM_CLIENT_ID }}" \
             --password "${{ secrets.ARM_CLIENT_SECRET }}" \
             --tenant   "${{ secrets.ARM_TENANT_ID }}"
           az account set --subscription "${{ secrets.ARM_SUBSCRIPTION_ID }}"
-          echo "Logged in as:"
-          az account show --output table
+          az account show -o table
 
-      - name: Create VM
-        shell: bash
+      - name: Ensure test subnet exists
+        env:
+          SUBNET_PREFIX: ${{ github.event.inputs.subnet_prefix || '10.20.2.0/24' }}
         run: |
-          VM_NAME="${{ github.event.inputs.vm_name }}"
-          VM_SIZE="${{ github.event.inputs.vm_size }}"
-          ADMIN_USER="${{ github.event.inputs.admin_username }}"
+          set -e
+          if ! az network vnet subnet show -g "$RG" --vnet-name "$VNET_NAME" -n "$SUBNET_NAME" >/dev/null 2>&1; then
+            echo "Creating subnet $SUBNET_NAME ($SUBNET_PREFIX) in $VNET_NAME"
+            az network vnet subnet create \
+              -g "$RG" --vnet-name "$VNET_NAME" \
+              -n "$SUBNET_NAME" --address-prefixes "$SUBNET_PREFIX"
+          else
+            echo "Subnet $SUBNET_NAME already exists."
+          fi
+
+      - name: Create networking (PIP/NSG if requested, then NIC)
+        id: net
+        run: |
+          set -e
+          VM_NAME="${{ github.event.inputs.vm_name || 'vm-dns-test' }}"
+
+          if [ "$CREATE_PUBLIC_IP" = "true" ]; then
+            echo "Creating Public IP"
+            az network public-ip create -g "$RG" -n "pip-$VM_NAME" --sku Standard --zone 1 --only-show-errors
+
+            echo "Creating NSG allowing SSH from ${{ secrets.ALLOW_SSH_CIDR }}"
+            az network nsg create -g "$RG" -n "nsg-$VM_NAME" --only-show-errors
+            az network nsg rule create -g "$RG" --nsg-name "nsg-$VM_NAME" -n "Allow-SSH" \
+              --priority 1000 --access Allow --protocol Tcp --direction Inbound \
+              --source-address-prefixes "${{ secrets.ALLOW_SSH_CIDR }}" \
+              --destination-address-prefixes "*" --destination-port-ranges 22 \
+              --source-port-ranges "*" --only-show-errors
+
+            echo "Creating NIC with Public IP + NSG"
+            az network nic create -g "$RG" -n "nic-$VM_NAME" \
+              --vnet-name "$VNET_NAME" --subnet "$SUBNET_NAME" \
+              --public-ip-address "pip-$VM_NAME" \
+              --network-security-group "nsg-$VM_NAME" \
+              --ip-forwarding false --only-show-errors
+          else
+            echo "Creating NIC (no Public IP)"
+            az network nic create -g "$RG" -n "nic-$VM_NAME" \
+              --vnet-name "$VNET_NAME" --subnet "$SUBNET_NAME" \
+              --ip-forwarding false --only-show-errors
+          fi
+
+          NIC_ID=$(az network nic show -g "$RG" -n "nic-$VM_NAME" --query id -o tsv)
+          echo "NIC_ID=$NIC_ID" >> $GITHUB_OUTPUT
+
+      - name: Create VM with username/password
+        id: vm
+        run: |
+          set -e
+          VM_NAME="${{ github.event.inputs.vm_name || 'vm-dns-test' }}"
+          VM_SIZE="${{ github.event.inputs.vm_size || 'Standard_B1s' }}"
+          ADMIN_USER="${{ github.event.inputs.admin_username || 'azureuser' }}"
           NIC_ID="${{ steps.net.outputs.NIC_ID }}"
 
           if az vm show -g "$RG" -n "$VM_NAME" >/dev/null 2>&1; then
@@ -63,3 +140,33 @@ jobs:
           echo "PUB_IP=$PUB_IP"   >> $GITHUB_OUTPUT
           echo "Private IP: $PRIV_IP"
           echo "Public  IP: ${PUB_IP:-<none>}"
+
+      - name: DNS sanity from inside the VNet
+        run: |
+          set -e
+          VM_NAME="${{ github.event.inputs.vm_name || 'vm-dns-test' }}"
+          APP="${APP_NAME}"
+          echo "Running DNS checks from $VM_NAME"
+          az vm run-command invoke -g "$RG" -n "$VM_NAME" --command-id RunShellScript --scripts '
+            set -e
+            echo "== getent hosts =="
+            getent hosts '"$APP"'.azurewebsites.net || true
+            getent hosts '"$APP"'.scm.azurewebsites.net || true
+
+            echo
+            echo "== curl HEAD (timeout 8s) =="
+            which curl >/dev/null 2>&1 && CURL_OK=1 || CURL_OK=0
+            if [ "$CURL_OK" -eq 1 ]; then
+              curl -sS -I --max-time 8 https://'"$APP"'.azurewebsites.net | head -n 5 || true
+            else
+              echo "curl not present; skipping HTTP check"
+            fi
+          ' -o json | jq -r ".value[0].message"
+
+      - name: Summary
+        run: |
+          echo "VM:         ${{ github.event.inputs.vm_name || 'vm-dns-test' }}"
+          echo "Private IP: ${{ steps.vm.outputs.PRIV_IP }}"
+          echo "Public IP:  ${{ steps.vm.outputs.PUB_IP || '<none>' }}"
+          echo "VNet/Subnet: ${{ env.VNET_NAME }}/${{ env.SUBNET_NAME }}"
+          echo "SSH:        $( [ '${{ github.event.inputs.create_public_ip || 'true' }}' = 'true' ] && echo "ssh ${{ github.event.inputs.admin_username || 'azureuser' }}@${{ steps.vm.outputs.PUB_IP }}" || echo 'No public IP (use Bastion or run-command)')"
